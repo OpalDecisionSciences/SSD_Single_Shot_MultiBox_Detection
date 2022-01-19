@@ -1,0 +1,125 @@
+
+"""
+Single Shot MultiBox Detector
+
+References: www.github.com/amdegroot (pre-trained model)
+            & 
+            Super Data Science (tutorial)
+"""
+
+
+# import libraries 
+# PyTorch contains the dynamic graphs to efficiently compute gradients of 
+# composition functions in backward propagation, update weights through 
+# stochastic gradient descent, we compute gradietn of composition fnx, 
+#several layers, one layer has fnx pf revious layer, and also the fnxs of the 
+# previous previous layer
+import torch 
+# Autograd is responsible for gradient descent, Variable converts tensors into torch variable
+# containing tensor and gradient as one element of the graph
+from torch.autograd import Variable
+# drawing rectangles around the objects, not using this for detection
+import cv2
+# data contains base transform and voc classes to transofrm images 
+# for compatibility with the NN; VOC_CLASSES is a dictionary for 
+# mapping or encoding classes (dog/human/etc)
+from data import BaseTransform, VOC_CLASSES as labelmap
+# build ssd is the constructor of the SSD NN architecture
+from ssd import build_ssd
+# process images of video and apply detect fnx; imageio is better than PIL in lines of code
+import imageio
+
+
+
+# Define Detection Fnx: Frame by Frame using ssd_build (compatible format, color images)
+def detect(frame, net, transform):
+    height, width = frame.shape[:2]  # third attribute .shape = num channels 
+    # check image format, from np.array to torch tensor, batch, torch variable
+    frame_t = transform(frame)[0] # transform fnx returns 2 elements: 1st = format
+    x = torch.from_numpy(frame_t).permute(2, 0, 1)  # convert sequence RBG to GRB; neural net SSD was trained under this convention
+    # add dimension corresponding to batch (unsqueeze(0)) and put into torch Variable
+    # torch Variable contains a tensor and a gradient
+    # this torch tensor will become an element of the dynamic graph which 
+    # will efficiently compute the gradients of any composition functions
+    # during backward propagation
+    x = Variable(x.unsqueeze(0))
+    # feed torch Variable into neural network and get output variable, y pred
+    y = net(x)
+    # y doesn't contain class result of detection, dog/human in input frame
+    # take data attribute from y to get the precited probablity
+    detections = y.data # .data gets first element (tensor); second element = gradient
+    # create new tensor object with w, h, w, h, responding to 
+    # scalar values of uppper left corner and same lower right corner of rectangle detector
+    # position of detected objects inside image must be normalized between 0 and 1
+    # scale normalization of positions of object detected in the edge
+    scale = torch.Tensor([width, height, width, height])
+    # detections = [batch, number of classes, number of occurrence, (score, x0, y0, x1, y1)]
+    # itereate through all classes and each occurrence of the class
+    # positive score > 0.6 means we have detected the object
+    for i in range(detections.size(1)):  # size(1) is the number of classes
+        # for each of these classes, i, for each of these occurrences, j
+        j = 0
+        # batch, class, index of occurence i, index of score; score > 0.6
+        while detections[0, i, j, 0] >= 0.6:
+            # [batch, class, index of occurrence i, (score, x0, y0, x1, y1)]
+            # pt = coordinates of points at the scale of the image
+            # multiply by scale variable for normalization of coordinates
+            pt = (detections[0, i, j, 1:] * scale).numpy()
+            # transform tensor of 4 coordinates back into np.array
+            # open cv takes np.array
+            # draw rectangles around detected objects in original frame in open cv
+            # 1st argument = frame, 2nd arg = upper left corner coordinates, 
+            # 3rd = bottom right coord, 4th arg = color of rectangle, 5th = size of rectangle edge width
+            cv2.rectangle(frame, (int(pt[0]), int(pt[1])), (int(pt[2]), int(pt[3])), (255, 0, 0), 2)
+            # print class label onto rectangle detecting dog/human/etc
+            # arg 1 = image frame, 2 = class, position of text where we want 
+            # to display label (upper left corner), font, font sixe, font color(255, 255, 255),
+            # font thickness, font line continuous (not dotted or dashed) 
+            cv2.putText(frame, labelmap[i - 1], (int(pt[0]), int(pt[1])), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 2, cv2.LINE_AA)
+            # increment j
+            j += 1
+    return frame
+
+
+# Create the SSD NN object
+# Load tensor of weights from pre-trained ssd neural network
+# load_state_dict used to attribute the tensor of weights to our nn
+# Two phases of ssd include train and test, but we are using a pre-trainined model
+net = build_ssd('test')
+net.load_state_dict(torch.load('ssd300_mAP_77.43_v2.pth', map_location = lambda storage, loc: storage))
+
+
+# Create the transformation: object of BaseTransform class
+# 1st arg = target size of images to feed to nn, 
+# 2nd arg = triplet of 3 values to put color values at the right scale (under which the nn was trained, according to the uploaded weights and associated model used)
+transform = BaseTransform(net.size, (104/256.0, 117/256.0, 123/256.0))
+
+
+# Doing object detection on video
+
+
+
+# Apply detect fnx on each frame
+# Open video
+# arg = name of video
+reader = imageio.get_reader('funny_dog.mp4')
+# get frequence of frames per second
+fps = reader.get_meta_data()['fps']
+# Create output video as final output with same fps frequencey
+# arg 1 = name output final video, arg 2 = 
+writer = imageio.get_writer('output.mp4', fps = fps)
+
+# iterate on each frame of the video (i = num frames, about 68 frames)
+# print rectangle on processed frames
+for i, frame in enumerate(reader):
+    # apply detect method to have objects detected by the ssd nn associated 
+    # to the right transformation to be sure this object can be accepted into the nn
+    # net is an advanced structure, an object of the build_ssd class, in order 
+    # to get this nn expected by the detect fnx, align with the way the ssd nn 
+    # was made (net.eval()) representing nn output y detections on each frame
+    # detect fnx returns processed frame
+    processed_frame = detect(frame, net.eval(), transform)
+    # reassemble for a new video; append processed frame to video writer object
+    writer.append_data(processed_frame)
+    print(i)
+writer.close()
